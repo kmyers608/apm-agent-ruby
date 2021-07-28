@@ -26,17 +26,47 @@ module ElasticAPM
       class SqlNormalizer < Normalizer
         register 'sql.active_record'
 
+        COMPONENTS_REGEX_MAP = {
+          single_quotes: /'(?:[^']|'')*?(?:\\'.*|'(?!'))/,
+          double_quotes: /"(?:[^"]|"")*?(?:\\".*|"(?!"))/,
+          numeric_literals: /-?\b(?:[0-9]+\.)?[0-9]+([eE][+-]?[0-9]+)?\b/,
+          boolean_literals: /\b(?:true|false|null)\b/i,
+          hexadecimal_literals: /0x[0-9a-fA-F]+/,
+          comments: /(?:#|--).*?(?=\r|\n|$)/i,
+          multi_line_comments: %r{\/\*(?:[^\/]|\/[^*])*?(?:\*\/|\/\*.*)}
+        }.freeze
+        MYSQL_COMPONENTS_REGEX = Regexp.union(COMPONENTS_REGEX_MAP.values)
+
         TYPE = 'db'
         ACTION = 'sql'
         SKIP_NAMES = %w[SCHEMA CACHE].freeze
         UNKNOWN = 'unknown'
 
-        def initialize(*args)
-          super
+      def initialize(*args)
+        super
 
-          @summarizer = Sql::Signature::Summarizer.new
+        @summarizer = Sql::Signature::Summarizer.new
 
-          @adapters = {}
+        @adapters = {}
+      end
+
+        def obfuscate_sql(sql)
+          if sql.length > 16384
+            "SQL query too large to remove sensitive data: #{sql.length}"
+          else
+            obfuscated = sql.gsub(MYSQL_COMPONENTS_REGEX, '?')
+            obfuscated = 'Failed to obfuscate SQL query - quote characters remained after obfuscation' if detect_unmatched_pairs(obfuscated)
+            obfuscated
+          end
+        end
+
+        def detect_unmatched_pairs(obfuscated)
+          # We use this to check whether the query contains any quote characters
+          # after obfuscation. If so, that's a good indication that the original
+          # query was malformed, and so our obfuscation can't reliably find
+          # literals. In such a case, we'll replace the entire query with a
+          # placeholder.
+          /'|"|\/\*|\*\//.match(obfuscated)
         end
 
         def normalize(_transaction, _name, payload)
@@ -47,7 +77,7 @@ module ElasticAPM
 
           context =
             Span::Context.new(
-              db: { statement: payload[:sql], type: 'sql' },
+              db: { statement: obfuscate_sql(payload[:sql]), type: 'sql' },
               destination: { service: { name: subtype, resource: subtype, type: TYPE } }
             )
 
