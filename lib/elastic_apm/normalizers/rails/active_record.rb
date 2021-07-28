@@ -26,17 +26,62 @@ module ElasticAPM
       class SqlNormalizer < Normalizer
         register 'sql.active_record'
 
+        COMPONENTS_REGEX_MAP = {
+          single_quotes: /'(?:[^']|'')*?(?:\\'.*|'(?!'))/,
+          double_quotes: /"(?:[^"]|"")*?(?:\\".*|"(?!"))/,
+          numeric_literals: /-?\b(?:[0-9]+\.)?[0-9]+([eE][+-]?[0-9]+)?\b/,
+          boolean_literals: /\b(?:true|false|null)\b/i,
+          hexadecimal_literals: /0x[0-9a-fA-F]+/,
+          comments: /(?:#|--).*?(?=\r|\n|$)/i,
+          multi_line_comments: %r{\/\*(?:[^\/]|\/[^*])*?(?:\*\/|\/\*.*)}
+        }.freeze
+
+        MYSQL_COMPONENTS = %i[
+          single_quotes
+          double_quotes
+          numeric_literals
+          boolean_literals
+          hexadecimal_literals
+          comments
+          multi_line_comments
+        ].freeze
+
         TYPE = 'db'
         ACTION = 'sql'
         SKIP_NAMES = %w[SCHEMA CACHE].freeze
         UNKNOWN = 'unknown'
 
-        def initialize(*args)
-          super
+      def initialize(*args)
+        super
 
-          @summarizer = Sql.summarizer
+        @summarizer = Sql.summarizer
 
-          @adapters = {}
+        @adapters = {}
+      end
+
+        def obfuscate_sql(sql)
+          #return sql unless ENV['ELASTIC_APM_SQL_OBFUSCATION']
+
+          if sql.size > 2000
+            'SQL query too large to remove sensitive data ...'
+          else
+            obfuscated = sql.gsub(generated_mysql_regex, '?')
+            obfuscated = 'Failed to obfuscate SQL query - quote characters remained after obfuscation' if detect_unmatched_pairs(obfuscated)
+            obfuscated
+          end
+        end
+
+        def generated_mysql_regex
+          @generated_mysql_regex ||= Regexp.union(MYSQL_COMPONENTS.map { |component| COMPONENTS_REGEX_MAP[component] })
+        end
+
+        def detect_unmatched_pairs(obfuscated)
+          # We use this to check whether the query contains any quote characters
+          # after obfuscation. If so, that's a good indication that the original
+          # query was malformed, and so our obfuscation can't reliably find
+          # literals. In such a case, we'll replace the entire query with a
+          # placeholder.
+          %r{'|"|\/\*|\*\/}.match(obfuscated)
         end
 
         def normalize(_transaction, _name, payload)
@@ -47,7 +92,7 @@ module ElasticAPM
 
           context =
             Span::Context.new(
-              db: { statement: payload[:sql], type: 'sql' },
+              db: { statement: obfuscate_sql(payload[:sql]), type: 'sql' },
               destination: { name: subtype, resource: subtype, type: TYPE }
             )
 
