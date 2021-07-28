@@ -43,6 +43,7 @@ if !defined?(JRUBY_VERSION) && RUBY_VERSION < '2.5'
 end
 gem 'grpc' if !defined?(JRUBY_VERSION) && RUBY_VERSION < '3.0'
 gem 'json'
+gem 'bootboot', require: nil
 gem 'json-schema', require: nil
 gem 'mongo', require: nil
 gem 'opentracing', require: nil
